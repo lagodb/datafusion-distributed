@@ -80,6 +80,8 @@ pub struct NetworkCoalesceExec {
     pub(crate) properties: Arc<PlanProperties>,
     pub(crate) input_stage: Stage,
     pub(crate) worker_connections: WorkerConnectionPool,
+    /// The number of consumer tasks executing this coalesce node in the stage above.
+    pub(crate) consumer_tasks: usize,
 }
 
 impl NetworkCoalesceExec {
@@ -98,6 +100,7 @@ impl NetworkCoalesceExec {
             properties: props,
             worker_connections: WorkerConnectionPool::new(input_stage.task_count()),
             input_stage,
+            consumer_tasks,
         })
     }
 
@@ -198,9 +201,27 @@ impl NetworkBoundary for NetworkCoalesceExec {
 
     fn with_input_stage(&self, input_stage: Stage) -> Result<Arc<dyn NetworkBoundary>> {
         let mut self_clone = self.clone();
-        self_clone.properties = scale_partitioning_props(self_clone.properties(), |p| {
-            p * input_stage.task_count() / self_clone.input_stage.task_count().max(1)
-        })?;
+        let max_input_task_count = input_stage
+            .task_count()
+            .div_ceil(self.consumer_tasks)
+            .max(1);
+        if let Stage::Local(local) = &input_stage {
+            self_clone.properties =
+                scale_partitioning_props(local.plan.properties(), |partitions| {
+                    partitions * max_input_task_count
+                })?;
+        } else {
+            let prev_max_input_task_count = self_clone
+                .input_stage
+                .task_count()
+                .div_ceil(self_clone.consumer_tasks)
+                .max(1);
+            let task_multiplier = (max_input_task_count / prev_max_input_task_count).max(1);
+            self_clone.properties =
+                scale_partitioning_props(self_clone.properties(), |partitions| {
+                    partitions * task_multiplier
+                })?;
+        }
         self_clone.worker_connections = WorkerConnectionPool::new(input_stage.task_count());
         self_clone.input_stage = input_stage;
         Ok(Arc::new(self_clone))
@@ -263,7 +284,13 @@ impl ExecutionPlan for NetworkCoalesceExec {
         let mut self_clone = self.as_ref().clone();
         match &mut self_clone.input_stage {
             Stage::Local(local) => {
-                local.plan = require_one_child(children)?;
+                let child = require_one_child(children)?;
+                let max_input_task_count = local.tasks.div_ceil(self_clone.consumer_tasks).max(1);
+                self_clone.properties =
+                    scale_partitioning_props(child.properties(), |partitions| {
+                        partitions * max_input_task_count
+                    })?;
+                local.plan = child;
             }
             Stage::Remote(_) => {
                 if !children.is_empty() {
@@ -556,5 +583,39 @@ mod tests {
             input_tasks: FEWER_TO_MANY_INPUT,
             consumer_tasks: FEWER_TO_MANY_OUTPUT,
         })
+    }
+
+    #[test]
+    fn with_input_stage_scales_by_div_ceil_consumer_tasks() -> Result<()> {
+        let child: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(Arc::new(Schema::empty())));
+        // 4 input tasks, 2 consumer tasks -> max group size is 2
+        let exec = NetworkCoalesceExec::try_new(Arc::clone(&child), 4, 2)?;
+        assert_eq!(exec.properties().partitioning.partition_count(), 2);
+
+        let updated = exec.with_input_stage(Stage::Local(LocalStage {
+            query_id: Uuid::nil(),
+            num: 1,
+            plan: Arc::clone(&child),
+            tasks: 4,
+            metrics_set: Default::default(),
+        }))?;
+        assert_eq!(updated.properties().partitioning.partition_count(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn replace_children_scales_by_div_ceil_consumer_tasks() -> Result<()> {
+        let child: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(Arc::new(Schema::empty())));
+        // 4 input tasks, 2 consumer tasks -> max group size is 2
+        let exec = Arc::new(NetworkCoalesceExec::try_new(Arc::clone(&child), 4, 2)?);
+        assert_eq!(exec.properties().partitioning.partition_count(), 2);
+
+        let new_child: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(Arc::new(Schema::empty())));
+        let updated = exec.replace_children(
+            vec![new_child],
+            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+        )?;
+        assert_eq!(updated.properties().partitioning.partition_count(), 2);
+        Ok(())
     }
 }

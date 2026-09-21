@@ -45,8 +45,9 @@ use super::mesh::{DsmInboxReceiver, DsmInboxSender};
 use super::mpsc_ring::{DsmMpscSender, NO_RECEIVER_TOKEN, Wakeup};
 use super::runtime::MppMesh;
 use super::transport::{
-    BatchChannelSender, DrainHandle, ExecuteTaskRx, IncomingExecuteTaskRequest, Interrupt,
-    MppDataStreamKey, MppFrameHeader, MppReceiver, MppSender,
+    BatchChannelSender, CooperativeDrainSet, DrainHandle, ExecuteTaskRx,
+    IncomingExecuteTaskRequest, Interrupt, MppDataStreamKey, MppFrameHeader, MppReceiver,
+    MppSender,
 };
 use crate::proto as pb;
 use crate::work_unit_feed::RemoteWorkUnitFeedRegistry;
@@ -386,8 +387,9 @@ pub async fn run_worker_fragment(
 /// - **Cancellation & Early Termination Unwinding:** Selects on `token.cancelled()`. If the query is
 ///   cancelled or terminates early (e.g. satisfied by a `LIMIT` clause downstream), the request loop
 ///   breaks out immediately and drops active sub-futures.
-/// - **Cooperative Inbound Ring Flushing:** Periodically invokes the mesh's inbound receiver's drain pass
-///   while awaiting frame arrivals or stream completions.
+/// - **Interrupt Checks & Cooperative Inbound Ring Flushing:** Periodically checks the embedder's
+///   interrupt source, then invokes the mesh's inbound drain pass while awaiting frame arrivals or
+///   stream completions.
 /// - **Completion:** Exits cleanly once all `n_partitions` have been requested (or the channel closes) AND all
 ///   spawned stream futures in `spawn_range` have completed to EOF.
 ///
@@ -411,8 +413,11 @@ where
 {
     let rx = mesh.take_execute_task_rx(stage_id, task_number)?;
     let drain_pass = {
-        let inbound = Arc::clone(mesh.inbound_receiver());
-        move || inbound.try_drain_pass()
+        let mesh = Arc::clone(mesh);
+        move || {
+            mesh.check_interrupt()?;
+            mesh.try_drain_pass()
+        }
     };
     let (res, failed_sender_proc) =
         run_execute_task_loop_inner(rx, n_partitions, token, drain_pass, spawn_range).await;

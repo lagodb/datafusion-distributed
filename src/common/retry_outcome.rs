@@ -17,6 +17,7 @@ impl RetryOutcome {
         }
     }
 
+    #[cfg(feature = "grpc")]
     pub(crate) fn tag(self, err: DataFusionError) -> DataFusionError {
         let ctx = match self {
             RetryOutcome::SameUrl => "RetryOutcome::SameUrl",
