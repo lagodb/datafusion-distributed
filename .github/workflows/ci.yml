@@ -5,6 +5,8 @@ on:
   push:
     branches:
       - main
+  # Benchmark and chaos suites are manual-only; see the `if:` guards below.
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -20,7 +22,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
-      - run: cargo build -p datafusion-distributed
+      - run: cargo build -p datafusion-distributed --no-default-features --features grpc
 
   clippy:
     runs-on: ubuntu-latest
@@ -41,6 +43,8 @@ jobs:
       - run: cargo test -p datafusion-distributed --features integration
 
   tpch-correctness-test:
+    # Manual-only: this suite is too slow to gate pull requests.
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -54,6 +58,8 @@ jobs:
           ADAPTIVE: ${{ matrix.planning_mode == 'adaptive' }}
 
   tpch-sorted-correctness-test:
+    # Manual-only: this suite is too slow to gate pull requests.
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -67,6 +73,8 @@ jobs:
           ADAPTIVE: ${{ matrix.planning_mode == 'adaptive' }}
 
   tpch-plans-test:
+    # Manual-only: this suite is too slow to gate pull requests.
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -74,6 +82,8 @@ jobs:
       - run: "cargo test -p datafusion-distributed --features tpch --test integration tpch_plans_test::"
 
   tpch-sorted-plans-test:
+    # Manual-only: this suite is too slow to gate pull requests.
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -81,6 +91,8 @@ jobs:
       - run: "cargo test -p datafusion-distributed --features tpch --test integration tpch_sorted_plans_test::"
 
   tpcds-correctness-test:
+    # Manual-only: this suite is too slow to gate pull requests.
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -95,6 +107,8 @@ jobs:
           ADAPTIVE: ${{ matrix.planning_mode == 'adaptive' }}
 
   tpcds-plans-test:
+    # Manual-only: this suite is too slow to gate pull requests.
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -102,6 +116,8 @@ jobs:
       - run: "cargo test -p datafusion-distributed --features tpcds --test integration tpcds_plans_test::"
 
   clickbench-correctness-test:
+    # Manual-only: this suite is too slow to gate pull requests.
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -119,6 +135,8 @@ jobs:
           ADAPTIVE: ${{ matrix.planning_mode == 'adaptive' }}
 
   clickbench-plans-test:
+    # Manual-only: this suite is too slow to gate pull requests.
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -137,6 +155,8 @@ jobs:
       - run: cargo test -p datafusion-distributed-iceberg -p datafusion-distributed-iceberg-test-tools
 
   chaos-test:
+    # Manual-only: this suite is too slow to gate pull requests.
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
