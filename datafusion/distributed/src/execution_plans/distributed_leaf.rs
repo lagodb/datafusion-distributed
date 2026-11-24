@@ -74,6 +74,9 @@ pub struct DistributedLeafExec {
     pub(crate) original: Arc<dyn ExecutionPlan>,
     pub(crate) properties: Arc<PlanProperties>,
     pub(crate) variants: Vec<Arc<dyn ExecutionPlan>>,
+    /// Whether the coordinator may execute `original` itself, as it does for a leaf in a
+    /// single-task stage that it runs.
+    pub(crate) coordinator_original: bool,
 }
 
 impl DistributedLeafExec {
@@ -126,7 +129,24 @@ impl DistributedLeafExec {
             original,
             properties,
             variants,
+            coordinator_original: true,
         })
+    }
+
+    /// Declares that the coordinator cannot execute `original`, a placement hint for static
+    /// distributed planning: when a plan it distributes keeps this leaf in the head stage, it
+    /// moves the head into a single-task worker stage, where the leaf runs as a task variant.
+    /// A plan left without network boundaries is returned undistributed, and the caller
+    /// decides how to run it. Planning with a dynamic task count does not read this hint, so
+    /// the coordinator can still execute `original` if the leaf stays in the head.
+    pub fn with_worker_only_original(mut self) -> Self {
+        self.coordinator_original = false;
+        self
+    }
+
+    /// Whether the coordinator may execute [DistributedLeafExec::original] itself.
+    pub fn coordinator_executes_original(&self) -> bool {
+        self.coordinator_original
     }
 
     /// The plan this leaf was built from (the leaf passed to

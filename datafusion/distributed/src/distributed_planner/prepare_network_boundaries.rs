@@ -1,8 +1,8 @@
 use crate::common::TreeNodeExt;
 use crate::stage::LocalStage;
-use crate::{NetworkBoundaryExt, Stage};
+use crate::{DistributedLeafExec, NetworkBoundaryExt, NetworkCoalesceExec, Stage};
 use datafusion::common::Result;
-use datafusion::common::tree_node::Transformed;
+use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::physical_plan::ExecutionPlan;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -11,6 +11,8 @@ use uuid::Uuid;
 /// - Elides ones whose producer and consumer sides both run on a single task
 /// - Scales the producer-stage head of the survivors to feed all consumer tasks
 /// - Stamps each surviving stage with a unique `(query_id, num)` identifier.
+/// - Moves a head stage holding a leaf whose `original` only a worker can execute into a
+///   single-task stage of its own (see [head_needs_worker]).
 pub(crate) fn prepare_network_boundaries(
     plan: Arc<dyn ExecutionPlan>,
 ) -> Result<Arc<dyn ExecutionPlan>> {
@@ -51,5 +53,48 @@ pub(crate) fn prepare_network_boundaries(
         Ok(Transformed::yes(nb))
     })?;
 
-    Ok(transformed.data)
+    let plan = transformed.data;
+    if !head_needs_worker(&plan)? {
+        return Ok(plan);
+    }
+    // This follows the elision above, which would remove the new 1-to-1 boundary again. A
+    // single-task boundary keeps the head's output partitioning.
+    let input_properties = Arc::clone(plan.properties());
+    let stage = Stage::Local(LocalStage {
+        query_id,
+        num: stage_id,
+        plan,
+        tasks: 1,
+        metrics_set: Default::default(),
+    });
+    Ok(Arc::new(NetworkCoalesceExec::try_from_stage(
+        stage,
+        input_properties,
+        1,
+    )?))
+}
+
+/// Whether the head stage, which the coordinator runs and where every [DistributedLeafExec]
+/// executes its `original`, holds a leaf whose `original` only a worker can execute.
+///
+/// The head holds such a leaf either because a 1-to-1 boundary above its stage was elided or
+/// because no boundary was ever injected above it. A plan without any boundary is not
+/// distributed, so its head stays as it is.
+///
+/// Only static planning reaches here: with a dynamic task count, boundaries are injected at
+/// execution time and the head is not checked.
+fn head_needs_worker(plan: &Arc<dyn ExecutionPlan>) -> Result<bool> {
+    let mut distributed = false;
+    let mut worker_only = false;
+    plan.apply(|node| {
+        if node.is_network_boundary() {
+            distributed = true;
+            return Ok(TreeNodeRecursion::Jump);
+        }
+        if let Some(leaf) = node.downcast_ref::<DistributedLeafExec>() {
+            worker_only |= !leaf.coordinator_executes_original();
+        }
+        Ok(TreeNodeRecursion::Continue)
+    })?;
+    Ok(distributed && worker_only)
 }

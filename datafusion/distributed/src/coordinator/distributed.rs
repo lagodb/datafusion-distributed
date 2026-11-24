@@ -162,9 +162,9 @@ pub(crate) fn isolate_stage_plan_state(
                         }
                     })
                     .collect::<Result<Vec<_>>>()?;
-                return Ok(Transformed::yes(Arc::new(DistributedLeafExec::try_new(
-                    original, variants,
-                )?)));
+                let mut isolated = DistributedLeafExec::try_new(original, variants)?;
+                isolated.coordinator_original = leaf.coordinator_original;
+                return Ok(Transformed::yes(Arc::new(isolated)));
             }
             if let Some(hj) = plan.downcast_ref::<HashJoinExec>() {
                 let children = plan.children().into_iter().map(Arc::clone).collect();

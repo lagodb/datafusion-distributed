@@ -178,10 +178,11 @@ pub(crate) fn sever_dynamic_filter_relationships_in_plan_for_display(
             return Ok(Transformed::no(node));
         }
 
-        Ok(Transformed::yes(Arc::new(DistributedLeafExec::try_new(
-            Arc::clone(leaf.original()),
-            variants,
-        )?) as Arc<dyn ExecutionPlan>))
+        let mut isolated = DistributedLeafExec::try_new(Arc::clone(leaf.original()), variants)?;
+        isolated.coordinator_original = leaf.coordinator_original;
+        Ok(Transformed::yes(
+            Arc::new(isolated) as Arc<dyn ExecutionPlan>
+        ))
     })
     // Handle SortExec nodes not inside variants.
     .and_then(|transformed| isolate_sort_dynamic_filters_for_display(transformed.data, task_ctx))
